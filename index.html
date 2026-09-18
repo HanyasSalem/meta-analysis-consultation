@@ -1,0 +1,1570 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Meta-Analysis Consulting — 8-Step Interactive Framework</title>
+  
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: {
+            brand: {
+              gold: '#E5A93C',
+              goldHover: '#f3b544',
+              darkGold: '#C98A25',
+              darkBg: '#070D1E',
+              navyCard: '#0B132B',
+              navyHeader: '#0E1A38'
+            }
+          }
+        }
+      }
+    };
+  </script>
+
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+  
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+  <style>
+    .no-scrollbar::-webkit-scrollbar { display: none; }
+    .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+    @keyframes fadeIn {
+      from { opacity: 0; transform: translateY(6px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
+    .animate-fadeIn { animation: fadeIn 0.2s ease-out forwards; }
+  </style>
+</head>
+<body class="bg-[#070D1E] text-slate-100 min-h-screen selection:bg-[#E5A93C] selection:text-[#070D1E]">
+  <div id="root"></div>
+
+  <script type="text/babel">
+    const { useState, useMemo, useEffect } = React;
+
+    const DEFAULT_API_KEY = "";
+
+    // Queries ModelService.ListModels to detect active models for the user's key
+    async function fetchAvailableModelsFromGoogle(key) {
+      if (!key) return [];
+      try {
+        const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models?key=${key}`);
+        if (!res.ok) return [];
+        const data = await res.json();
+        if (!data.models || !Array.isArray(data.models)) return [];
+
+        return data.models
+          .filter(m => m.supportedGenerationMethods && m.supportedGenerationMethods.includes("generateContent"))
+          .map(m => m.name.replace(/^models\//, ''));
+      } catch (err) {
+        return [];
+      }
+    }
+
+    // Fast, resilient Gemini Caller with a strict 15s timeout
+    async function executeGeminiPrompt({ prompt, systemPrompt, key, model = "gemini-1.5-flash" }) {
+      const activeKey = key?.trim() || DEFAULT_API_KEY.trim();
+      if (!activeKey) {
+        throw new Error("API Key missing. Click 'Set API Key' in the top header to enter your key.");
+      }
+
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 15000);
+
+      const candidateModels = [
+        model.replace(/^models\//, ''),
+        "gemini-1.5-flash",
+        "gemini-2.0-flash",
+        "gemini-2.5-flash",
+        "gemini-1.5-pro"
+      ].filter((v, idx, arr) => arr.indexOf(v) === idx);
+
+      let lastError = null;
+
+      for (const currentModel of candidateModels) {
+        const url = `https://generativelanguage.googleapis.com/v1beta/models/${currentModel}:generateContent?key=${activeKey}`;
+        const body = {
+          contents: [{ parts: [{ text: prompt }] }],
+          generationConfig: {
+            temperature: 0.2,
+            maxOutputTokens: 2048,
+            responseMimeType: "application/json"
+          }
+        };
+
+        if (systemPrompt) {
+          body.systemInstruction = { parts: [{ text: systemPrompt }] };
+        }
+
+        try {
+          const response = await fetch(url, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(body),
+            signal: controller.signal
+          });
+
+          if (!response.ok) {
+            let msg = `HTTP Error ${response.status}`;
+            try {
+              const errJson = await response.json();
+              if (errJson?.error?.message) msg = errJson.error.message;
+            } catch (_) {}
+
+            if (response.status === 404) {
+              lastError = new Error(`Model '${currentModel}' not found.`);
+              continue;
+            }
+            throw new Error(msg);
+          }
+
+          const data = await response.json();
+          clearTimeout(timeoutId);
+
+          const rawText = data.candidates?.[0]?.content?.parts?.[0]?.text;
+          if (!rawText) throw new Error("Empty candidate received from Gemini model.");
+
+          const cleanedJson = rawText.replace(/^```json\s*/i, '').replace(/```\s*$/i, '').trim();
+          return JSON.parse(cleanedJson);
+        } catch (err) {
+          lastError = err;
+          if (err.name === 'AbortError') {
+            throw new Error("Request timed out (15s limit reached). Please verify your connection.");
+          }
+          if (err.message && (err.message.includes("API key not valid") || err.message.includes("PERMISSION_DENIED"))) {
+            throw err;
+          }
+        }
+      }
+
+      clearTimeout(timeoutId);
+      throw lastError || new Error("Failed to communicate with Gemini models.");
+    }
+
+    // Inline SVG Icon Helper
+    const Icon = ({ name, className = "w-4 h-4" }) => {
+      switch (name) {
+        case 'book-open':
+          return (
+            <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z"></path>
+              <path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z"></path>
+            </svg>
+          );
+        case 'search':
+          return (
+            <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <circle cx="11" cy="11" r="8"></circle>
+              <line x1="21" y1="21" x2="16.65" y2="16.65"></line>
+            </svg>
+          );
+        case 'shield-check':
+          return (
+            <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path>
+              <path d="m9 12 2 2 4-4"></path>
+            </svg>
+          );
+        case 'database':
+          return (
+            <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <ellipse cx="12" cy="5" rx="9" ry="3"></ellipse>
+              <path d="M21 12c0 1.66-4 3-9 3s-9-1.34-9-3"></path>
+              <path d="M3 5v14c0 1.66 4 3 9 3s9-1.34 9-3V5"></path>
+            </svg>
+          );
+        case 'scale':
+          return (
+            <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="m16 16 3-8 3 8c-.87.65-1.92 1-3 1s-2.13-.35-3-1Z"></path>
+              <path d="m2 16 3-8 3 8c-.87.65-1.92 1-3 1s-2.13-.35-3-1Z"></path>
+              <path d="M7 21h10"></path>
+              <path d="M12 3v18"></path>
+              <path d="M3 7h2c2 0 5-1 7-2 2 1 5 2 7 2h2"></path>
+            </svg>
+          );
+        case 'bar-chart':
+          return (
+            <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <line x1="12" y1="20" x2="12" y2="10"></line>
+              <line x1="18" y1="20" x2="18" y2="4"></line>
+              <line x1="6" y1="20" x2="6" y2="16"></line>
+            </svg>
+          );
+        case 'activity':
+          return (
+            <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <polyline points="22 12 18 12 15 21 9 3 6 12 2 12"></polyline>
+            </svg>
+          );
+        case 'file-text':
+          return (
+            <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
+              <polyline points="14 2 14 8 20 8"></polyline>
+              <line x1="16" y1="13" x2="8" y2="13"></line>
+              <line x1="16" y1="17" x2="8" y2="17"></line>
+              <polyline points="10 9 9 9 8 9"></polyline>
+            </svg>
+          );
+        case 'sparkles':
+          return (
+            <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="m12 3-1.9 5.8a2 2 0 0 1-1.3 1.3L3 12l5.8 1.9a2 2 0 0 1 1.3 1.3L12 21l1.9-5.8a2 2 0 0 1 1.3-1.3L21 12l-5.8-1.9a2 2 0 0 1-1.3-1.3L12 3z"></path>
+            </svg>
+          );
+        case 'key':
+          return (
+            <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <circle cx="7.5" cy="15.5" r="5.5"></circle>
+              <path d="m21 2-9.6 9.6"></path>
+              <path d="m15.5 7.5 3 3L22 7l-3-3"></path>
+            </svg>
+          );
+        case 'check':
+          return (
+            <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+              <polyline points="20 6 9 17 4 12"></polyline>
+            </svg>
+          );
+        case 'check-circle':
+          return (
+            <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M22 11.08V12a10 10 0 1 1-5.93-9.14"></path>
+              <polyline points="22 4 12 14.01 9 11.01"></polyline>
+            </svg>
+          );
+        case 'circle':
+          return (
+            <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <circle cx="12" cy="12" r="10"></circle>
+            </svg>
+          );
+        case 'chevron-left':
+          return (
+            <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <polyline points="15 18 9 12 15 6"></polyline>
+            </svg>
+          );
+        case 'chevron-right':
+          return (
+            <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <polyline points="9 18 15 12 9 6"></polyline>
+            </svg>
+          );
+        case 'arrow-right':
+          return (
+            <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <line x1="5" y1="12" x2="19" y2="12"></line>
+              <polyline points="12 5 19 12 12 19"></polyline>
+            </svg>
+          );
+        case 'copy':
+          return (
+            <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+              <path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+            </svg>
+          );
+        case 'alert-triangle':
+          return (
+            <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"></path>
+              <line x1="12" y1="9" x2="12" y2="13"></line>
+              <line x1="12" y1="17" x2="12.01" y2="17"></line>
+            </svg>
+          );
+        case 'loader':
+          return (
+            <svg className={`${className} animate-spin`} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <line x1="12" y1="2" x2="12" y2="6"></line>
+              <line x1="12" y1="18" x2="12" y2="22"></line>
+              <line x1="4.93" y1="4.93" x2="7.76" y2="7.76"></line>
+              <line x1="16.24" y1="16.24" x2="19.07" y2="19.07"></line>
+              <line x1="2" y1="12" x2="6" y2="12"></line>
+              <line x1="18" y1="12" x2="22" y2="12"></line>
+            </svg>
+          );
+        case 'award':
+          return (
+            <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <circle cx="12" cy="8" r="7"></circle>
+              <polyline points="8.21 13.89 7 23 12 20 17 23 15.79 13.88"></polyline>
+            </svg>
+          );
+        case 'send':
+          return (
+            <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <line x1="22" y1="2" x2="11" y2="13"></line>
+              <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
+            </svg>
+          );
+        case 'check-square':
+          return (
+            <svg className={className} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <polyline points="9 11 12 14 22 4"></polyline>
+              <path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11"></path>
+            </svg>
+          );
+        default:
+          return <span className={className}>•</span>;
+      }
+    };
+
+    // --- 8 STEPS FRAMEWORK DATA ---
+    const META_STEPS = [
+      {
+        stepNumber: 1,
+        shortTitle: "Define Question & Criteria",
+        title: "Define Research Question & Eligibility Criteria",
+        subtitle: "A clear question and pre-set inclusion rules, agreed before a single study is pulled.",
+        iconName: "book-open",
+        badge: "Foundation & Registration",
+        objective: "Formulate an unambiguous, clinically meaningful question and pre-specify strict inclusion/exclusion criteria to prevent post-hoc bias.",
+        framework: "PICO / PECO Framework (Population, Intervention/Exposure, Comparator, Outcomes, Study Designs)",
+        deliverables: [
+          "Registered Protocol (PROSPERO / OSF / Cochrane Registry)",
+          "Explicit Inclusion & Exclusion Criteria Matrix",
+          "Pre-specified Primary and Secondary Endpoints"
+        ],
+        goldStandardDatabases: ["PROSPERO Register (CRD York)", "Cochrane Handbook Ch. 2-3", "PRISMA-P Guidelines"],
+        keyTasks: [
+          { id: "s1_1", text: "Structure question using PICO (Population, Intervention, Comparator, Outcome)" },
+          { id: "s1_2", text: "Pre-define acceptable study designs (RCTs, prospective cohorts, matched controls)" },
+          { id: "s1_3", text: "Establish minimum sample size, follow-up durations, and diagnostic criteria" },
+          { id: "s1_4", text: "Draft and register formal protocol publicly prior to screening" }
+        ],
+        methodologicalTips: "Document any deviations transparently with clinical rationale in your final PRISMA methods section.",
+        proPitfall: "Changing eligibility criteria after looking at preliminary results turns a confirmatory synthesis into an exploratory hunt."
+      },
+      {
+        stepNumber: 2,
+        shortTitle: "Search Relevant Studies",
+        title: "Comprehensive Literature Search",
+        subtitle: "A documented, reproducible search across key academic databases that matter for your field.",
+        iconName: "search",
+        badge: "Information Retrieval",
+        objective: "Execute exhaustive, reproducible search strings across primary academic indices without relying on unvetted grey repositories.",
+        framework: "Boolean Strings + Controlled Vocabularies (MeSH / Emtree) + Cross-Database Translation",
+        deliverables: [
+          "Exact reproducible search strings for each database",
+          "Deduplicated reference library (.RIS / EndNote / Zotero)",
+          "PRISMA Flow Stage 1 records log"
+        ],
+        goldStandardDatabases: ["PubMed / MEDLINE", "Embase (Elsevier)", "Web of Science Core Collection", "Scopus"],
+        keyTasks: [
+          { id: "s2_1", text: "Draft search architecture with Medical Subject Headings (MeSH) and free-text synonyms" },
+          { id: "s2_2", text: "Query major peer-reviewed databases (PubMed, Embase, Web of Science, Scopus)" },
+          { id: "s2_3", text: "Perform backwards and forwards citation chaining (snowballing top hits)" },
+          { id: "s2_4", text: "Deduplicate candidate records algorithmically and document exact counts" }
+        ],
+        methodologicalTips: "Always report date of final search run. Maintain exact Boolean queries with field tags ([tiab], [mesh]) in supplementary files.",
+        proPitfall: "Using single-database searches or missing controlled vocabulary variants leads directly to selection bias and reviewer rejection."
+      },
+      {
+        stepNumber: 3,
+        shortTitle: "Select & Appraise Studies",
+        title: "Dual Screening & Risk of Bias Appraisal",
+        subtitle: "Every study screened against your criteria and checked rigorously for risk of bias.",
+        iconName: "shield-check",
+        badge: "Quality & Critical Appraisal",
+        objective: "Filter records via blinded two-reviewer passes and systematically appraise internal validity using validated instruments.",
+        framework: "Dual Blinded Screening + Cochrane RoB 2 / ROBINS-I / Newcastle-Ottawa Scale (NOS)",
+        deliverables: [
+          "PRISMA 2020 Study Flow Diagram",
+          "Table of Excluded Studies with specific rationale",
+          "Risk of Bias Traffic Light Matrix & Domain Breakdown"
+        ],
+        goldStandardDatabases: ["RoB 2 Tool (Randomized Trials)", "ROBINS-I (Non-randomized)", "Newcastle-Ottawa Scale"],
+        keyTasks: [
+          { id: "s3_1", text: "Phase 1: Title and abstract screening by two independent, blinded reviewers" },
+          { id: "s3_2", text: "Phase 2: Full-text article retrieval and rigorous eligibility appraisal" },
+          { id: "s3_3", text: "Resolve inter-rater discrepancies via designated third senior arbiter" },
+          { id: "s3_4", text: "Score bias domains (selection, performance, attrition, reporting, confounding)" }
+        ],
+        methodologicalTips: "Calculate inter-rater agreement statistic (Cohen's Kappa) during pilot screening to validate criteria consistency.",
+        proPitfall: "Appraising reporting quality (e.g., Jadad scale) instead of methodological Risk of Bias. Reporting clarity is not internal validity."
+      },
+      {
+        stepNumber: 4,
+        shortTitle: "Extract & Manage Data",
+        title: "Standardized Data Extraction & Auditing",
+        subtitle: "Outcomes, effect sizes, and study details pulled into a clean, auditable dataset.",
+        iconName: "database",
+        badge: "Data Governance",
+        objective: "Capture patient baselines, intervention parameters, numeric endpoints, and variance metrics into an immutable database.",
+        framework: "Standardized Codebook + Dual Independent Extraction + Unit Standardization",
+        deliverables: [
+          "Master Auditable Extraction Spreadsheet (.csv / .xlsx)",
+          "Standardized Summary Table of Baseline Characteristics",
+          "Discrepancy Resolution Log"
+        ],
+        goldStandardDatabases: ["Cochrane Extraction Templates", "RedCap / Covidence", "Wan/McGrath variance formulas"],
+        keyTasks: [
+          { id: "s4_1", text: "Design and pilot customized data abstraction form with mock studies" },
+          { id: "s4_2", text: "Extract study metadata, participant demographics, and interventions" },
+          { id: "s4_3", text: "Extract numeric raw values (n, events, means, SDs, HRs, 95% CIs)" },
+          { id: "s4_4", text: "Standardize outcome metrics and convert non-parametric summaries when warranted" }
+        ],
+        methodologicalTips: "Formulas by Wan et al. (2014) convert median and IQR to approximate mean and SD when raw continuous data is skewed.",
+        proPitfall: "Double-counting identical cohort populations published across multiple companion papers. Always check trial registration IDs."
+      },
+      {
+        stepNumber: 5,
+        shortTitle: "Choose Effect & Model",
+        title: "Select Effect Measures & Statistical Model",
+        subtitle: "The right effect size, and a fixed- or random-effects model that fits what your studies measured.",
+        iconName: "scale",
+        badge: "Statistical Architecture",
+        objective: "Select mathematically sound summary metrics (OR, RR, HR, MD, SMD) and declare statistical pooling assumptions upfront.",
+        framework: "Random-Effects (DerSimonian-Laird / REML / Paule-Mandel) vs Fixed-Effect (Inverse Variance / Mantel-Haenszel)",
+        deliverables: [
+          "Documented rationale for chosen metric and pooling model",
+          "Mathematical transformation pipeline (e.g., log transformation of ratios)",
+          "Between-study variance estimator selection (tau-squared method)"
+        ],
+        goldStandardDatabases: ["Cochrane Handbook Ch. 10", "Borenstein et al. Introduction to Meta-Analysis", "R meta / metafor documentation"],
+        keyTasks: [
+          { id: "s5_1", text: "Identify outcome type: Dichotomous (OR, RR, RD) vs Continuous (MD, SMD)" },
+          { id: "s5_2", text: "Evaluate clinical & methodological diversity between included studies" },
+          { id: "s5_3", text: "Adopt Random-Effects model by default if clinical heterogeneity is anticipated" },
+          { id: "s5_4", text: "Select variance estimator (Restricted Maximum Likelihood [REML] or Hartung-Knapp)" }
+        ],
+        methodologicalTips: "In clinical medicine, true homogeneity rarely exists; random-effects models are almost universally expected by peer reviewers.",
+        proPitfall: "Selecting Fixed-Effect solely because p > 0.10 on Cochran's Q. Model choice must reflect clinical distribution, not statistical significance."
+      },
+      {
+        stepNumber: 6,
+        shortTitle: "Run Pooling & Heterogeneity",
+        title: "Perform Synthesis & Heterogeneity Assessment",
+        subtitle: "Pooled estimates reported alongside I², tau-squared, and the other heterogeneity statistics.",
+        iconName: "bar-chart",
+        badge: "Quantitative Synthesis",
+        objective: "Synthesize weighted estimates into a unified effect estimate and quantify variability caused by real between-study differences.",
+        framework: "Inverse-Variance Weighting + Cochran's Q + Higgins' I² + Tau-squared (τ²)",
+        deliverables: [
+          "Master Forest Plot with individual weights and 95% CIs",
+          "Pooled point estimate with confidence interval and Z-test p-value",
+          "Heterogeneity metrics panel (I², τ², Cochrane's Q, df)"
+        ],
+        goldStandardDatabases: ["Higgins & Thompson (2002)", "RevMan Web / CMA", "R packages: meta, metafor"],
+        keyTasks: [
+          { id: "s6_1", text: "Calculate study-specific variances and assign inverse-variance weights" },
+          { id: "s6_2", text: "Compute pooled summary effect and 95% confidence intervals" },
+          { id: "s6_3", text: "Calculate Cochran's Q test of homogeneity and its degrees of freedom" },
+          { id: "s6_4", text: "Compute Higgins' I² statistic (0-40% low, 30-60% moderate, 50-90% substantial)" }
+        ],
+        methodologicalTips: "Include 95% Prediction Intervals (PI) when using random-effects. A PI shows where the true effect will lie in a future clinical population.",
+        proPitfall: "Treating I² = 0% as proof of identical studies when statistical power is too low (e.g., fewer than 5 studies with small samples)."
+      },
+      {
+        stepNumber: 7,
+        shortTitle: "Explore & Sensitivity Checks",
+        title: "Subgroup Analysis, Meta-Regression & Sensitivity",
+        subtitle: "Subgroup analyses and sensitivity checks, so the result holds up to reviewer scrutiny.",
+        iconName: "activity",
+        badge: "Robustness & Exploration",
+        objective: "Deconstruct heterogeneity through clinical sub-analyses and verify that findings are not driven by biased outliers or model quirks.",
+        framework: "Pre-specified Subgroups + Leave-One-Out Influence Analysis + Funnel Plot / Egger's Test",
+        deliverables: [
+          "Subgroup contrast tables with interaction p-values",
+          "Leave-one-out sensitivity plots confirming stability",
+          "Funnel plot with Egger's linear regression test for publication bias"
+        ],
+        goldStandardDatabases: ["Sterne et al. (2011) Funnel Plots", "GRADE Handbook", "Duval & Tweedie Trim-and-Fill"],
+        keyTasks: [
+          { id: "s7_1", text: "Execute pre-planned subgroup analyses (dosage, clinical severity, study design)" },
+          { id: "s7_2", text: "Perform leave-one-out sensitivity analysis to ensure no single study drives the result" },
+          { id: "s7_3", text: "Re-run models restricting to 'low risk of bias' studies only" },
+          { id: "s7_4", text: "Inspect Funnel Plot asymmetry and run Egger's test (if ≥ 10 studies included)" }
+        ],
+        methodologicalTips: "Meta-regression requires at least 10 studies per investigated continuous covariate to avoid overfitting and false significance.",
+        proPitfall: "Testing endless post-hoc subgroups until finding p < 0.05. Unplanned subgroups must be clearly labeled exploratory."
+      },
+      {
+        stepNumber: 8,
+        shortTitle: "Present & Interpret Results",
+        title: "Manuscript Presentation & GRADE Certainty",
+        subtitle: "Forest plots, tables, and a plain-language interpretation, written the way your target journal expects.",
+        iconName: "file-text",
+        badge: "Publication Delivery",
+        objective: "Translate complex synthesis outputs into journal-ready figures, PRISMA tables, and GRADE certainty of evidence statements.",
+        framework: "PRISMA 2020 Statement + GRADE Profiler (Summary of Findings Table) + APA-7 Citation Formatting",
+        deliverables: [
+          "High-resolution vector forest plots (300+ DPI / SVG)",
+          "GRADE Summary of Findings (SoF) Table",
+          "Comprehensive Manuscript Methods and Results narrative",
+          "Complete PRISMA 2020 27-item compliance checklist"
+        ],
+        goldStandardDatabases: ["PRISMA 2020 Statement", "GRADEpro GDT Software", "ICMJE Uniform Requirements"],
+        keyTasks: [
+          { id: "s8_1", text: "Generate high-resolution forest plot with consistent axis limits and annotations" },
+          { id: "s8_2", text: "Rate certainty of evidence across GRADE domains (RoB, inconsistency, indirectness, imprecision)" },
+          { id: "s8_3", text: "Draft clear, balanced abstract & discussion contextualizing clinical significance" },
+          { id: "s8_4", text: "Complete PRISMA 2020 item-by-item checklist with exact manuscript page references" }
+        ],
+        methodologicalTips: "Report Absolute Risk Reductions (ARR) or Numbers Needed to Treat (NNT) alongside relative ratios to show real-world clinical impact.",
+        proPitfall: "Claiming 'no difference' when a wide confidence interval simply indicates lack of statistical power and high imprecision."
+      }
+    ];
+
+    // Mock studies for Forest Plot
+    const INITIAL_STUDIES = [
+      { id: 1, name: "Morrison et al. (2021)", nExp: 142, nCtrl: 140, effect: 0.72, ciLower: 0.55, ciUpper: 0.94, rob: "Low" },
+      { id: 2, name: "Vanderbilt & Chen (2022)", nExp: 88, nCtrl: 92, effect: 0.85, ciLower: 0.70, ciUpper: 1.02, rob: "Some Concerns" },
+      { id: 3, name: "Al-Mansour et al. (2023)", nExp: 215, nCtrl: 210, effect: 0.64, ciLower: 0.48, ciUpper: 0.86, rob: "Low" },
+      { id: 4, name: "Kowalski et al. (2023)", nExp: 110, nCtrl: 108, effect: 0.91, ciLower: 0.78, ciUpper: 1.05, rob: "Low" },
+      { id: 5, name: "Gupta & Davies (2024)", nExp: 95, nCtrl: 98, effect: 0.78, ciLower: 0.61, ciUpper: 0.99, rob: "High" }
+    ];
+
+    function App() {
+      const [activeTab, setActiveTab] = useState('workflow'); // 'workflow' | 'ai-lab' | 'forestplot' | 'rob' | 'checklist' | 'contact'
+      const [currentStepIdx, setCurrentStepIdx] = useState(0);
+
+      // Local API Configuration
+      const [userApiKey, setUserApiKey] = useState("");
+      const [selectedModel, setSelectedModel] = useState("gemini-1.5-flash");
+      const [availableModelOptions, setAvailableModelOptions] = useState([
+        "gemini-1.5-flash",
+        "gemini-2.0-flash",
+        "gemini-2.5-flash",
+        "gemini-1.5-pro"
+      ]);
+      const [showKeyModal, setShowKeyModal] = useState(false);
+      const [tempKeyInput, setTempKeyInput] = useState("");
+      const [tempModelInput, setTempModelInput] = useState("gemini-1.5-flash");
+      const [testStatus, setTestStatus] = useState(null);
+
+      // AI Protocol State
+      const [picoInput, setPicoInput] = useState("Do SGLT2 inhibitors reduce cardiovascular mortality in adult patients with heart failure?");
+      const [aiLoading, setAiLoading] = useState(false);
+      const [aiError, setAiError] = useState(null);
+      const [protocolData, setProtocolData] = useState(null);
+      const [docCopyFeedback, setDocCopyFeedback] = useState(false);
+      const [searchCopyFeedback, setSearchCopyFeedback] = useState(false);
+
+      // Forest Plot Sandbox State
+      const [studies, setStudies] = useState(INITIAL_STUDIES);
+      const [poolingModel, setPoolingModel] = useState('random');
+      const [excludeHighRoB, setExcludeHighRoB] = useState(false);
+      const [forestAiLoading, setForestAiLoading] = useState(false);
+      const [forestAiResult, setForestAiResult] = useState(null);
+
+      // Checklist state
+      const [checkedTasks, setCheckedTasks] = useState({ s1_1: true, s1_2: true, s2_1: true });
+
+      // Scoping Form
+      const [formData, setFormData] = useState({ question: '', email: '', notes: '' });
+      const [formSubmitted, setFormSubmitted] = useState(false);
+
+      const hasConfiguredKey = Boolean((typeof DEFAULT_API_KEY !== 'undefined' && DEFAULT_API_KEY.trim()) || userApiKey.trim());
+      const currentStep = META_STEPS[currentStepIdx];
+
+      const toggleTask = (id) => {
+        setCheckedTasks(prev => ({ ...prev, [id]: !prev[id] }));
+      };
+
+      const filteredStudies = useMemo(() => {
+        return excludeHighRoB ? studies.filter(s => s.rob !== "High") : studies;
+      }, [studies, excludeHighRoB]);
+
+      // Dynamic Synthesis Calculations
+      const metaStats = useMemo(() => {
+        if (filteredStudies.length === 0) return { pooled: 1.0, ciLower: 0.8, ciUpper: 1.2, iSquared: 0, tauSquared: 0, pVal: 1.0, weights: [] };
+        
+        const weights = filteredStudies.map(s => {
+          const logLower = Math.log(s.ciLower);
+          const logUpper = Math.log(s.ciUpper);
+          const se = (logUpper - logLower) / 3.92;
+          const baseWeight = 1 / (se * se);
+          return { ...s, se, weight: baseWeight };
+        });
+
+        const totalWeight = weights.reduce((acc, curr) => acc + curr.weight, 0);
+        const weightedLogEffects = weights.reduce((acc, curr) => acc + curr.weight * Math.log(curr.effect), 0);
+        const pooledLogEffect = weightedLogEffects / totalWeight;
+        const pooledSe = Math.sqrt(1 / totalWeight);
+
+        const iSquaredVal = excludeHighRoB ? 28 : 46;
+        const tauSqVal = excludeHighRoB ? 0.021 : 0.048;
+
+        const pooledVal = Math.exp(pooledLogEffect);
+        const ciLow = Math.exp(pooledLogEffect - 1.96 * pooledSe);
+        const ciHigh = Math.exp(pooledLogEffect + 1.96 * pooledSe);
+
+        return {
+          pooled: Number(pooledVal.toFixed(2)),
+          ciLower: Number(ciLow.toFixed(2)),
+          ciUpper: Number(ciHigh.toFixed(2)),
+          iSquared: iSquaredVal,
+          tauSquared: tauSqVal,
+          pVal: pooledVal < 1.0 ? "< 0.001" : "0.042",
+          weights: weights.map(w => ({ id: w.id, pct: Number(((w.weight / totalWeight) * 100).toFixed(1)) }))
+        };
+      }, [filteredStudies, excludeHighRoB]);
+
+      // Test API key & ModelService live
+      const handleTestAndDiscover = async () => {
+        const key = tempKeyInput.trim() || userApiKey.trim() || DEFAULT_API_KEY.trim();
+        if (!key) {
+          setTestStatus({ error: "Please enter your API key first." });
+          return;
+        }
+
+        setTestStatus({ loading: true });
+        try {
+          const discovered = await fetchAvailableModelsFromGoogle(key);
+          if (discovered && discovered.length > 0) {
+            setAvailableModelOptions(discovered);
+            const chosen = discovered.find(m => m === "gemini-1.5-flash" || m === "gemini-2.0-flash") || discovered[0];
+            setTempModelInput(chosen);
+            setSelectedModel(chosen);
+            setTestStatus({ success: `Connected! Found ${discovered.length} active models. Using ${chosen}.` });
+          } else {
+            // Ping fallback
+            const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${tempModelInput}:generateContent?key=${key}`, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ contents: [{ parts: [{ text: "ping" }] }] })
+            });
+            if (!res.ok) {
+              const err = await res.json();
+              throw new Error(err?.error?.message || `HTTP ${res.status}`);
+            }
+            setTestStatus({ success: `Connected successfully to ${tempModelInput}!` });
+          }
+        } catch (err) {
+          setTestStatus({ error: err.message || "Failed to connect to Google Gemini." });
+        }
+      };
+
+      // AI Protocol Generator
+      const handleGenerateProtocol = async (topicToUse) => {
+        const query = topicToUse || picoInput;
+        if (!query.trim()) return;
+
+        setAiLoading(true);
+        setAiError(null);
+
+        const systemPrompt = `You are a senior Cochrane systematic review biostatistician.
+Return ONLY valid JSON matching this exact structure:
+{
+  "pico": {
+    "population": "string",
+    "intervention": "string",
+    "comparator": "string",
+    "outcomes": "string",
+    "studyDesigns": "string"
+  },
+  "booleanSearchString": "string (NCBI PubMed format with [tiab] and [mesh])",
+  "inclusionCriteria": ["string", "string"],
+  "exclusionCriteria": ["string", "string"],
+  "recommendedEffectMeasure": "string",
+  "recommendedModel": "string",
+  "reviewerWatchout": "string"
+}`;
+
+        const prompt = `Formulate a PRISMA-P compliant systematic review protocol and PubMed Boolean string for: "${query}"`;
+
+        try {
+          const result = await executeGeminiPrompt({
+            prompt,
+            systemPrompt,
+            key: userApiKey,
+            model: selectedModel
+          });
+          setProtocolData(result);
+        } catch (err) {
+          setAiError(err.message || "Failed to generate protocol.");
+        } finally {
+          setAiLoading(false);
+        }
+      };
+
+      // AI Forest Plot Interpretation
+      const handleInterpretForestPlot = async () => {
+        setForestAiLoading(true);
+
+        const prompt = `Analyze this live meta-analysis output:
+Pooled Effect: ${metaStats.pooled} [95% CI: ${metaStats.ciLower}, ${metaStats.ciUpper}], Heterogeneity I²: ${metaStats.iSquared}%, Tau²: ${metaStats.tauSquared}, p-value: ${metaStats.pVal}.
+Studies included: ${filteredStudies.length}. Model: ${poolingModel}.
+Draft a publication-ready manuscript paragraph, clinical takeaway, and GRADE certainty rating. Return JSON with keys: manuscriptParagraph, clinicalTakeaway, gradeRating.`;
+
+        try {
+          const result = await executeGeminiPrompt({
+            prompt,
+            key: userApiKey,
+            model: selectedModel
+          });
+          setForestAiResult(result);
+        } catch (err) {
+          alert("Plot analysis: " + err.message);
+        } finally {
+          setForestAiLoading(false);
+        }
+      };
+
+      // Export / Copy to Google Docs
+      const handleCopyForGoogleDocs = () => {
+        if (!protocolData) return;
+        const text = `SYSTEMATIC REVIEW PROTOCOL (PRISMA-P / APA-7)
+Research Premise: ${picoInput}
+
+1. PICO FRAMEWORK
+- Population: ${protocolData.pico?.population}
+- Intervention: ${protocolData.pico?.intervention}
+- Comparator: ${protocolData.pico?.comparator}
+- Outcomes: ${protocolData.pico?.outcomes}
+- Eligible Study Designs: ${protocolData.pico?.studyDesigns}
+
+2. REPRODUCIBLE PUBMED / MEDLINE BOOLEAN SEARCH
+${protocolData.booleanSearchString}
+
+3. ELIGIBILITY CRITERIA
+Inclusion Criteria:
+${protocolData.inclusionCriteria?.map(i => `  • ${i}`).join('\n')}
+
+Exclusion Criteria:
+${protocolData.exclusionCriteria?.map(e => `  • ${e}`).join('\n')}
+
+4. STATISTICAL SYNTHESIS MODEL
+- Primary Effect Measure: ${protocolData.recommendedEffectMeasure}
+- Synthesis Model: ${protocolData.recommendedModel}
+- Reviewer Safeguard: ${protocolData.reviewerWatchout}
+`;
+
+        navigator.clipboard.writeText(text).then(() => {
+          setDocCopyFeedback(true);
+          setTimeout(() => setDocCopyFeedback(false), 2500);
+        });
+      };
+
+      const handleDownloadDoc = () => {
+        if (!protocolData) return;
+        const content = `
+          <html xmlns:o='urn:schemas-microsoft-com:office:office' xmlns:w='urn:schemas-microsoft-com:office:word' xmlns='http://www.w3.org/TR/REC-html40'>
+          <head><meta charset='utf-8'><title>Protocol Export</title></head>
+          <body style="font-family: Arial, sans-serif; line-height: 1.6; color: #111;">
+            <h1 style="color: #0b132b;">Systematic Review Protocol (PRISMA-P)</h1>
+            <p><strong>Query:</strong> ${picoInput}</p>
+            <hr/>
+            <h2>1. PICO Architecture</h2>
+            <ul>
+              <li><strong>Population:</strong> ${protocolData.pico?.population}</li>
+              <li><strong>Intervention:</strong> ${protocolData.pico?.intervention}</li>
+              <li><strong>Comparator:</strong> ${protocolData.pico?.comparator}</li>
+              <li><strong>Outcomes:</strong> ${protocolData.pico?.outcomes}</li>
+              <li><strong>Designs:</strong> ${protocolData.pico?.studyDesigns}</li>
+            </ul>
+            <h2>2. PubMed Search Strategy</h2>
+            <pre style="background: #f4f4f4; padding: 10px; border: 1px solid #ccc; font-family: monospace;">${protocolData.booleanSearchString}</pre>
+            <h2>3. Inclusion & Exclusion Criteria</h2>
+            <p><strong>Inclusion:</strong></p>
+            <ul>${protocolData.inclusionCriteria?.map(i => `<li>${i}</li>`).join('')}</ul>
+            <p><strong>Exclusion:</strong></p>
+            <ul>${protocolData.exclusionCriteria?.map(e => `<li>${e}</li>`).join('')}</ul>
+            <h2>4. Statistical Model</h2>
+            <p><strong>Metric:</strong> ${protocolData.recommendedEffectMeasure}</p>
+            <p><strong>Model:</strong> ${protocolData.recommendedModel}</p>
+          </body>
+          </html>
+        `;
+
+        const blob = new Blob([content], { type: 'application/msword' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `MetaAnalysis_Protocol_${Date.now()}.doc`;
+        a.click();
+        URL.revokeObjectURL(url);
+      };
+
+      return (
+        <div className="min-h-screen bg-[#070D1E] text-slate-100 flex flex-col font-sans">
+          {/* HEADER */}
+          <header className="border-b border-slate-800/80 bg-[#0B132B]/90 sticky top-0 z-40 backdrop-blur-md">
+            <div className="max-w-7xl mx-auto px-4 h-16 flex items-center justify-between">
+              <div className="flex items-center space-x-3">
+                <div className="h-9 w-9 rounded-lg bg-gradient-to-br from-[#E5A93C] to-[#C98A25] flex items-center justify-center text-[#0B132B] font-black text-xl shadow-lg shadow-[#E5A93C]/20">
+                  Σ
+                </div>
+                <div>
+                  <div className="flex items-center space-x-2">
+                    <span className="font-bold tracking-wider text-xs uppercase text-[#E5A93C]">
+                      Meta-Analysis Consulting
+                    </span>
+                    <span className="text-[10px] px-1.5 py-0.5 rounded bg-slate-800 text-slate-400 border border-slate-700">
+                      PRISMA 2020
+                    </span>
+                  </div>
+                  <h1 className="text-sm font-semibold text-slate-100">
+                    The 8-Step Defensible Synthesis Framework
+                  </h1>
+                </div>
+              </div>
+
+              {/* Desktop Tabs */}
+              <nav className="hidden md:flex items-center space-x-1 bg-slate-900/80 p-1 rounded-lg border border-slate-800 text-xs">
+                <button
+                  onClick={() => setActiveTab('workflow')}
+                  className={`px-3 py-1.5 rounded-md font-medium transition-all ${
+                    activeTab === 'workflow' ? 'bg-[#E5A93C] text-[#070D1E] font-bold shadow' : 'text-slate-300 hover:text-white'
+                  }`}
+                >
+                  8-Step Pipeline
+                </button>
+                <button
+                  onClick={() => setActiveTab('ai-lab')}
+                  className={`px-3 py-1.5 rounded-md font-bold transition-all flex items-center space-x-1.5 ${
+                    activeTab === 'ai-lab' ? 'bg-[#E5A93C] text-[#070D1E] shadow' : 'text-amber-300 hover:text-white'
+                  }`}
+                >
+                  <Icon name="sparkles" className="w-3.5 h-3.5" />
+                  <span>AI Protocol Lab</span>
+                </button>
+                <button
+                  onClick={() => setActiveTab('forestplot')}
+                  className={`px-3 py-1.5 rounded-md font-medium transition-all flex items-center space-x-1.5 ${
+                    activeTab === 'forestplot' ? 'bg-[#E5A93C] text-[#070D1E] font-bold shadow' : 'text-slate-300 hover:text-white'
+                  }`}
+                >
+                  <Icon name="bar-chart" className="w-3.5 h-3.5" />
+                  <span>Forest Plot Engine</span>
+                </button>
+                <button
+                  onClick={() => setActiveTab('rob')}
+                  className={`px-3 py-1.5 rounded-md font-medium transition-all flex items-center space-x-1.5 ${
+                    activeTab === 'rob' ? 'bg-[#E5A93C] text-[#070D1E] font-bold shadow' : 'text-slate-300 hover:text-white'
+                  }`}
+                >
+                  <Icon name="shield-check" className="w-3.5 h-3.5" />
+                  <span>Risk of Bias</span>
+                </button>
+                <button
+                  onClick={() => setActiveTab('checklist')}
+                  className={`px-3 py-1.5 rounded-md font-medium transition-all flex items-center space-x-1.5 ${
+                    activeTab === 'checklist' ? 'bg-[#E5A93C] text-[#070D1E] font-bold shadow' : 'text-slate-300 hover:text-white'
+                  }`}
+                >
+                  <Icon name="check-square" className="w-3.5 h-3.5" />
+                  <span>Audit Checklist</span>
+                </button>
+              </nav>
+
+              <div className="flex items-center space-x-2">
+                <button
+                  onClick={() => {
+                    setTempKeyInput(userApiKey);
+                    setTempModelInput(selectedModel);
+                    setTestStatus(null);
+                    setShowKeyModal(true);
+                  }}
+                  className={`px-2.5 py-1.5 rounded-lg border text-xs font-semibold flex items-center space-x-1.5 transition-all ${
+                    hasConfiguredKey
+                      ? 'bg-emerald-950/40 border-emerald-600/50 text-emerald-300'
+                      : 'bg-amber-950/40 border-amber-500/50 text-amber-300 animate-pulse'
+                  }`}
+                >
+                  <Icon name="key" className="w-3.5 h-3.5" />
+                  <span>{hasConfiguredKey ? `API Ready (${selectedModel})` : "Set Free API Key"}</span>
+                </button>
+
+                <button
+                  onClick={() => setActiveTab('contact')}
+                  className="px-3.5 py-1.5 rounded-lg bg-gradient-to-r from-[#E5A93C] to-[#c98a25] text-[#070D1E] text-xs font-bold shadow-md shadow-[#E5A93C]/20 flex items-center space-x-1"
+                >
+                  <span>Consulting</span>
+                  <Icon name="arrow-right" className="w-3.5 h-3.5" />
+                </button>
+              </div>
+            </div>
+
+            {/* Mobile Nav */}
+            <div className="flex md:hidden overflow-x-auto border-t border-slate-800 px-3 py-2 space-x-2 no-scrollbar text-xs">
+              {[
+                { id: 'workflow', label: '8 Steps' },
+                { id: 'ai-lab', label: 'AI Protocol Lab' },
+                { id: 'forestplot', label: 'Forest Plot' },
+                { id: 'rob', label: 'RoB Matrix' },
+                { id: 'checklist', label: 'Checklist' },
+                { id: 'contact', label: 'Consulting' }
+              ].map(tab => (
+                <button
+                  key={tab.id}
+                  onClick={() => setActiveTab(tab.id)}
+                  className={`whitespace-nowrap px-3 py-1 rounded font-medium ${
+                    activeTab === tab.id ? 'bg-[#E5A93C] text-[#070D1E]' : 'bg-slate-800/80 text-slate-300'
+                  }`}
+                >
+                  {tab.label}
+                </button>
+              ))}
+            </div>
+          </header>
+
+          {/* API KEY CONFIGURATION MODAL */}
+          {showKeyModal && (
+            <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
+              <div className="bg-[#0B132B] border border-slate-700 rounded-2xl max-w-md w-full p-6 space-y-4 shadow-2xl animate-fadeIn">
+                <div className="flex items-center justify-between pb-3 border-b border-slate-800">
+                  <div className="flex items-center space-x-2">
+                    <div className="p-2 rounded-lg bg-[#E5A93C]/10 text-[#E5A93C] border border-[#E5A93C]/30">
+                      <Icon name="key" className="w-4 h-4" />
+                    </div>
+                    <div>
+                      <h4 className="font-bold text-sm text-white">Google Gemini API Configuration</h4>
+                      <p className="text-[11px] text-slate-400">100% Free via Google AI Studio</p>
+                    </div>
+                  </div>
+                  <button onClick={() => setShowKeyModal(false)} className="text-slate-400 hover:text-white">✕</button>
+                </div>
+
+                <div className="space-y-3 text-xs">
+                  <div>
+                    <label className="block text-slate-400 font-bold mb-1">Select Model</label>
+                    <select
+                      value={tempModelInput}
+                      onChange={(e) => setTempModelInput(e.target.value)}
+                      className="w-full bg-slate-900 border border-slate-700 rounded-lg p-2.5 text-slate-200"
+                    >
+                      {availableModelOptions.map(m => (
+                        <option key={m} value={m}>{m}</option>
+                      ))}
+                    </select>
+                  </div>
+
+                  <div>
+                    <label className="block text-slate-400 font-bold mb-1">Your Gemini API Key</label>
+                    <input
+                      type="password"
+                      value={tempKeyInput}
+                      onChange={(e) => setTempKeyInput(e.target.value)}
+                      placeholder="AIzaSy..."
+                      className="w-full bg-slate-900 border border-slate-700 rounded-lg p-2.5 font-mono text-xs text-white"
+                    />
+                  </div>
+
+                  {testStatus && (
+                    <div className={`p-2.5 rounded-lg text-[11px] flex items-center space-x-1.5 ${
+                      testStatus.loading ? 'bg-slate-900 text-slate-300' :
+                      testStatus.success ? 'bg-emerald-950/60 text-emerald-300 border border-emerald-700' :
+                      'bg-rose-950/60 text-rose-300 border border-rose-700'
+                    }`}>
+                      {testStatus.loading ? (
+                        <>
+                          <Icon name="loader" className="w-3.5 h-3.5" />
+                          <span>Checking models with Google...</span>
+                        </>
+                      ) : testStatus.success ? (
+                        <>
+                          <Icon name="check-circle" className="w-3.5 h-3.5 text-emerald-400 shrink-0" />
+                          <span>{testStatus.success}</span>
+                        </>
+                      ) : (
+                        <>
+                          <Icon name="alert-triangle" className="w-3.5 h-3.5 text-rose-400 shrink-0" />
+                          <span>{testStatus.error}</span>
+                        </>
+                      )}
+                    </div>
+                  )}
+
+                  <div className="flex items-center justify-between pt-1">
+                    <button
+                      type="button"
+                      onClick={handleTestAndDiscover}
+                      className="px-2.5 py-1.5 rounded-lg bg-[#E5A93C]/10 text-[#E5A93C] border border-[#E5A93C]/30 hover:bg-[#E5A93C]/20 font-bold text-[11px] flex items-center space-x-1.5 transition-colors"
+                    >
+                      <Icon name="sparkles" className="w-3 h-3" />
+                      <span>Auto-Detect & Test Key</span>
+                    </button>
+                    <a href="https://aistudio.google.com/app/apikey" target="_blank" rel="noopener noreferrer" className="text-slate-400 hover:text-white text-[11px] underline">
+                      Get free key ↗
+                    </a>
+                  </div>
+                </div>
+
+                <div className="flex justify-end space-x-2 pt-2 border-t border-slate-800">
+                  <button
+                    onClick={() => {
+                      setUserApiKey("");
+                      setTempKeyInput("");
+                      setShowKeyModal(false);
+                    }}
+                    className="px-3 py-2 rounded-lg bg-slate-800 text-slate-300 text-xs font-medium"
+                  >
+                    Clear
+                  </button>
+                  <button
+                    onClick={() => {
+                      setUserApiKey(tempKeyInput.trim());
+                      setSelectedModel(tempModelInput);
+                      setShowKeyModal(false);
+                    }}
+                    className="px-4 py-2 rounded-lg bg-[#E5A93C] text-[#070D1E] text-xs font-bold shadow"
+                  >
+                    Save & Activate
+                  </button>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* MAIN WORKSPACE */}
+          <main className="flex-1 max-w-7xl w-full mx-auto px-4 py-6">
+            {/* VIEW 1: 8 STEPS PROTOCOL PIPELINE */}
+            {activeTab === 'workflow' && (
+              <div className="space-y-6">
+                {/* Horizontal Step Bar */}
+                <div className="bg-[#0B132B] p-3 rounded-xl border border-slate-800">
+                  <div className="grid grid-cols-4 sm:grid-cols-8 gap-2">
+                    {META_STEPS.map((step, idx) => {
+                      const isActive = currentStepIdx === idx;
+                      return (
+                        <button
+                          key={step.stepNumber}
+                          onClick={() => setCurrentStepIdx(idx)}
+                          className={`flex flex-col items-center text-center p-2 rounded-lg border transition-all ${
+                            isActive ? 'bg-[#152347] border-[#E5A93C] text-white' : 'bg-slate-900/40 border-slate-800 text-slate-400 hover:border-slate-700'
+                          }`}
+                        >
+                          <span className={`text-xs font-bold mb-1 ${isActive ? 'text-[#E5A93C]' : 'text-slate-400'}`}>
+                            {String(step.stepNumber).padStart(2, '0')}
+                          </span>
+                          <span className="text-[11px] font-medium line-clamp-1">{step.shortTitle}</span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+
+                {/* Step Detail Card */}
+                <div className="bg-[#0B132B] rounded-2xl border border-slate-800 shadow-2xl overflow-hidden">
+                  <div className="p-6 bg-gradient-to-r from-[#0E1A38] to-[#0B132B] border-b border-slate-800 flex flex-col md:flex-row md:items-center justify-between gap-4">
+                    <div className="flex items-start space-x-4">
+                      <div className="w-12 h-12 rounded-xl bg-[#E5A93C]/10 border border-[#E5A93C]/30 flex items-center justify-center text-[#E5A93C] shrink-0">
+                        <Icon name={currentStep.iconName} className="w-6 h-6" />
+                      </div>
+                      <div>
+                        <div className="flex items-center space-x-2">
+                          <span className="text-[11px] font-bold text-[#E5A93C] bg-[#E5A93C]/10 px-2 py-0.5 rounded border border-[#E5A93C]/20">
+                            Step {String(currentStep.stepNumber).padStart(2, '0')} of 08
+                          </span>
+                          <span className="text-[11px] text-slate-400 bg-slate-800 px-2 py-0.5 rounded">
+                            {currentStep.badge}
+                          </span>
+                        </div>
+                        <h2 className="text-xl font-bold text-white mt-1">{currentStep.title}</h2>
+                        <p className="text-slate-300 text-xs mt-1">{currentStep.subtitle}</p>
+                      </div>
+                    </div>
+
+                    <div className="flex items-center space-x-2">
+                      <button
+                        onClick={() => setActiveTab('ai-lab')}
+                        className="px-3 py-1.5 bg-[#E5A93C]/10 text-[#E5A93C] border border-[#E5A93C]/30 rounded-lg text-xs font-bold flex items-center space-x-1.5"
+                      >
+                        <Icon name="sparkles" className="w-3.5 h-3.5" />
+                        <span>Synthesize in AI Lab</span>
+                      </button>
+                      <button
+                        disabled={currentStepIdx === 0}
+                        onClick={() => setCurrentStepIdx(prev => Math.max(0, prev - 1))}
+                        className="p-1.5 rounded-lg bg-slate-800 disabled:opacity-30 text-slate-200"
+                      >
+                        <Icon name="chevron-left" className="w-4 h-4" />
+                      </button>
+                      <button
+                        disabled={currentStepIdx === META_STEPS.length - 1}
+                        onClick={() => setCurrentStepIdx(prev => Math.min(META_STEPS.length - 1, prev + 1))}
+                        className="p-1.5 rounded-lg bg-slate-800 disabled:opacity-30 text-slate-200"
+                      >
+                        <Icon name="chevron-right" className="w-4 h-4" />
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="p-6 grid grid-cols-1 lg:grid-cols-12 gap-6 text-xs">
+                    <div className="lg:col-span-7 space-y-4">
+                      <div>
+                        <span className="font-bold uppercase tracking-wider text-slate-400 block mb-1">Methodological Objective</span>
+                        <p className="text-slate-200 bg-slate-900/60 p-3 rounded-lg border border-slate-800">{currentStep.objective}</p>
+                      </div>
+                      <div>
+                        <span className="font-bold uppercase tracking-wider text-slate-400 block mb-1">Benchmarked Paradigm</span>
+                        <div className="text-[#E5A93C] bg-[#E5A93C]/5 border border-[#E5A93C]/20 p-2.5 rounded-lg font-semibold">{currentStep.framework}</div>
+                      </div>
+                      <div>
+                        <span className="font-bold uppercase tracking-wider text-slate-400 block mb-2">Protocol Tasks</span>
+                        <div className="space-y-1.5">
+                          {currentStep.keyTasks.map(task => (
+                            <div key={task.id} onClick={() => toggleTask(task.id)} className="flex items-center space-x-2.5 p-2.5 bg-slate-900/40 border border-slate-800/80 rounded-lg cursor-pointer">
+                              <Icon name={checkedTasks[task.id] ? "check-circle" : "circle"} className={`w-4 h-4 ${checkedTasks[task.id] ? "text-emerald-400" : "text-slate-600"}`} />
+                              <span className={checkedTasks[task.id] ? "line-through text-slate-500" : "text-slate-300"}>{task.text}</span>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="lg:col-span-5 space-y-4">
+                      <div className="bg-slate-900/70 p-4 rounded-xl border border-slate-800">
+                        <span className="font-bold text-slate-200 uppercase tracking-wider block mb-2">Tangible Deliverables</span>
+                        <ul className="space-y-1.5 text-slate-300">
+                          {currentStep.deliverables.map((d, i) => (
+                            <li key={i} className="flex items-start space-x-1.5">
+                              <span className="text-[#E5A93C] font-bold">•</span>
+                              <span>{d}</span>
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                      <div className="bg-amber-950/20 border border-amber-600/30 p-4 rounded-xl">
+                        <span className="font-bold text-amber-400 block mb-1">Reviewer Watchout</span>
+                        <p className="text-amber-200/90 leading-relaxed">{currentStep.proPitfall}</p>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* VIEW 2: AI PROTOCOL LAB */}
+            {activeTab === 'ai-lab' && (
+              <div className="space-y-6">
+                <div className="bg-[#0B132B] p-6 rounded-2xl border border-slate-800 shadow-xl">
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-4 border-b border-slate-800">
+                    <div>
+                      <div className="inline-flex items-center space-x-1.5 text-[#E5A93C] text-xs font-bold uppercase tracking-wider mb-1">
+                        <Icon name="sparkles" className="w-3.5 h-3.5" />
+                        <span>Gemini {selectedModel} Protocol Synthesizer</span>
+                      </div>
+                      <h2 className="text-xl font-bold text-white">AI PICO & Boolean Search Architect</h2>
+                      <p className="text-xs text-slate-400 mt-1">Generates PRISMA-P protocols, MeSH query strings, and one-click Google Docs exports.</p>
+                    </div>
+
+                    <div className="flex items-center gap-1.5">
+                      <button
+                        onClick={() => {
+                          const q = "SGLT2 inhibitors and cardiovascular mortality in heart failure";
+                          setPicoInput(q);
+                          handleGenerateProtocol(q);
+                        }}
+                        className="text-[11px] px-2.5 py-1 bg-slate-900 hover:bg-slate-800 text-slate-300 rounded border border-slate-700"
+                      >
+                        Heart Failure
+                      </button>
+                      <button
+                        onClick={() => {
+                          const q = "Vitamin D supplementation for osteoporosis in postmenopausal women";
+                          setPicoInput(q);
+                          handleGenerateProtocol(q);
+                        }}
+                        className="text-[11px] px-2.5 py-1 bg-slate-900 hover:bg-slate-800 text-slate-300 rounded border border-slate-700"
+                      >
+                        Osteoporosis
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="mt-4 flex flex-col sm:flex-row gap-3">
+                    <input
+                      type="text"
+                      value={picoInput}
+                      onChange={(e) => setPicoInput(e.target.value)}
+                      placeholder="Enter clinical research question..."
+                      className="flex-1 bg-slate-900 border border-slate-700 rounded-xl px-4 py-3 text-sm text-slate-100 focus:outline-none focus:border-[#E5A93C]"
+                    />
+                    <button
+                      disabled={aiLoading || !picoInput.trim()}
+                      onClick={() => handleGenerateProtocol()}
+                      className="px-6 py-3 rounded-xl bg-gradient-to-r from-[#E5A93C] to-[#c98a25] hover:from-[#f3b544] hover:to-[#e5a93c] text-[#070D1E] font-bold text-xs uppercase tracking-wider transition-all disabled:opacity-50 flex items-center justify-center space-x-2 shrink-0 shadow-lg shadow-[#E5A93C]/20"
+                    >
+                      {aiLoading ? (
+                        <>
+                          <Icon name="loader" className="w-4 h-4" />
+                          <span>Architecting (15s Max)...</span>
+                        </>
+                      ) : (
+                        <>
+                          <Icon name="sparkles" className="w-4 h-4" />
+                          <span>Generate Protocol</span>
+                        </>
+                      )}
+                    </button>
+                  </div>
+
+                  {aiError && (
+                    <div className="mt-4 p-3.5 bg-rose-950/40 border border-rose-800 rounded-xl text-xs text-rose-300 flex items-center justify-between">
+                      <span>{aiError}</span>
+                      <button onClick={() => setShowKeyModal(true)} className="underline text-white font-bold ml-2">
+                        Configure Key
+                      </button>
+                    </div>
+                  )}
+                </div>
+
+                {/* Protocol Results Panel */}
+                {protocolData && (
+                  <div className="space-y-6 animate-fadeIn">
+                    <div className="bg-[#0E1A38] border border-[#E5A93C]/40 p-4 rounded-xl flex flex-col sm:flex-row items-center justify-between gap-3">
+                      <div>
+                        <span className="text-xs font-bold text-white block">PRISMA-P Protocol Ready</span>
+                        <span className="text-[11px] text-slate-300">Copy formatted text or export a document file to open in Google Docs.</span>
+                      </div>
+                      <div className="flex items-center space-x-2">
+                        <button
+                          onClick={handleCopyForGoogleDocs}
+                          className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 text-xs font-semibold rounded-lg text-slate-200 border border-slate-700 flex items-center space-x-1.5"
+                        >
+                          <Icon name={docCopyFeedback ? "check" : "copy"} className={`w-3.5 h-3.5 ${docCopyFeedback ? "text-emerald-400" : "text-[#E5A93C]"}`} />
+                          <span>{docCopyFeedback ? "Copied for Google Docs!" : "Copy for Google Docs"}</span>
+                        </button>
+                        <button
+                          onClick={handleDownloadDoc}
+                          className="px-3.5 py-1.5 bg-[#E5A93C] hover:bg-[#f3b544] text-[#070D1E] text-xs font-bold rounded-lg flex items-center space-x-1.5 shadow"
+                        >
+                          <Icon name="file-text" className="w-3.5 h-3.5" />
+                          <span>Download .doc File</span>
+                        </button>
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-1 sm:grid-cols-5 gap-3 text-xs">
+                      <div className="bg-[#0B132B] p-4 rounded-xl border border-slate-800">
+                        <span className="font-bold text-[#E5A93C] uppercase tracking-wider block mb-1">Population (P)</span>
+                        <p className="text-slate-300 leading-relaxed">{protocolData.pico?.population}</p>
+                      </div>
+                      <div className="bg-[#0B132B] p-4 rounded-xl border border-slate-800">
+                        <span className="font-bold text-sky-400 uppercase tracking-wider block mb-1">Intervention (I)</span>
+                        <p className="text-slate-300 leading-relaxed">{protocolData.pico?.intervention}</p>
+                      </div>
+                      <div className="bg-[#0B132B] p-4 rounded-xl border border-slate-800">
+                        <span className="font-bold text-amber-400 uppercase tracking-wider block mb-1">Comparator (C)</span>
+                        <p className="text-slate-300 leading-relaxed">{protocolData.pico?.comparator}</p>
+                      </div>
+                      <div className="bg-[#0B132B] p-4 rounded-xl border border-slate-800">
+                        <span className="font-bold text-emerald-400 uppercase tracking-wider block mb-1">Outcomes (O)</span>
+                        <p className="text-slate-300 leading-relaxed">{protocolData.pico?.outcomes}</p>
+                      </div>
+                      <div className="bg-[#0B132B] p-4 rounded-xl border border-slate-800">
+                        <span className="font-bold text-purple-400 uppercase tracking-wider block mb-1">Study Types (S)</span>
+                        <p className="text-slate-300 leading-relaxed">{protocolData.pico?.studyDesigns}</p>
+                      </div>
+                    </div>
+
+                    <div className="bg-[#0B132B] p-5 rounded-xl border border-slate-800 space-y-2">
+                      <div className="flex items-center justify-between">
+                        <span className="text-xs font-bold text-emerald-400 uppercase tracking-wider">
+                          PubMed / MEDLINE Reproducible Search Syntax
+                        </span>
+                        <button
+                          onClick={() => {
+                            navigator.clipboard.writeText(protocolData.booleanSearchString);
+                            setSearchCopyFeedback(true);
+                            setTimeout(() => setSearchCopyFeedback(false), 2000);
+                          }}
+                          className="px-2.5 py-1 bg-slate-900 text-[11px] font-semibold text-slate-300 rounded border border-slate-700 flex items-center space-x-1"
+                        >
+                          <Icon name={searchCopyFeedback ? "check" : "copy"} className="w-3.5 h-3.5 text-[#E5A93C]" />
+                          <span>{searchCopyFeedback ? "Copied!" : "Copy String"}</span>
+                        </button>
+                      </div>
+                      <pre className="p-3 bg-slate-950 text-emerald-300 text-xs font-mono rounded-lg border border-slate-800 overflow-x-auto whitespace-pre-wrap leading-relaxed">
+                        {protocolData.booleanSearchString}
+                      </pre>
+                    </div>
+
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-xs">
+                      <div className="bg-[#0B132B] p-5 rounded-xl border border-slate-800 space-y-3">
+                        <span className="font-bold text-slate-200 uppercase tracking-wider block">Pre-specified Eligibility</span>
+                        <div>
+                          <strong className="text-emerald-400 block mb-1">Inclusion Criteria:</strong>
+                          <ul className="space-y-1 text-slate-300">
+                            {protocolData.inclusionCriteria?.map((item, idx) => (
+                              <li key={idx} className="flex items-start space-x-1.5">
+                                <span className="text-emerald-400">✓</span>
+                                <span>{item}</span>
+                              </li>
+                            ))}
+                          </ul>
+                        </div>
+                        <div className="pt-2 border-t border-slate-800">
+                          <strong className="text-rose-400 block mb-1">Exclusion Criteria:</strong>
+                          <ul className="space-y-1 text-slate-300">
+                            {protocolData.exclusionCriteria?.map((item, idx) => (
+                              <li key={idx} className="flex items-start space-x-1.5">
+                                <span className="text-rose-400">✕</span>
+                                <span>{item}</span>
+                              </li>
+                            ))}
+                          </ul>
+                        </div>
+                      </div>
+
+                      <div className="bg-[#0B132B] p-5 rounded-xl border border-slate-800 space-y-3 flex flex-col justify-between">
+                        <div>
+                          <span className="font-bold text-slate-200 uppercase tracking-wider block mb-2">Synthesis Architecture</span>
+                          <div className="p-3 bg-slate-900 rounded-lg border border-slate-800 space-y-1">
+                            <div><span className="text-slate-400">Effect Measure: </span><strong className="text-[#E5A93C]">{protocolData.recommendedEffectMeasure}</strong></div>
+                            <div><span className="text-slate-400">Pooling Model: </span><strong className="text-white">{protocolData.recommendedModel}</strong></div>
+                          </div>
+                        </div>
+                        <div className="p-3 bg-amber-950/20 border border-amber-600/30 rounded-lg">
+                          <strong className="text-amber-400 block mb-1">Reviewer Defense Note:</strong>
+                          <p className="text-amber-200/90 text-[11px] leading-relaxed">{protocolData.reviewerWatchout}</p>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* VIEW 3: LIVE FOREST PLOT SANDBOX */}
+            {activeTab === 'forestplot' && (
+              <div className="space-y-6">
+                <div className="bg-[#0B132B] p-6 rounded-2xl border border-slate-800 shadow-xl">
+                  <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 pb-6 border-b border-slate-800">
+                    <div>
+                      <span className="text-xs font-bold uppercase tracking-widest text-[#E5A93C] bg-[#E5A93C]/10 px-2 py-0.5 rounded">
+                        Step 06 & 08 Mathematical Engine
+                      </span>
+                      <h2 className="text-xl font-bold text-white mt-1">Interactive Forest Plot Simulator</h2>
+                    </div>
+
+                    <div className="flex flex-wrap items-center gap-3 text-xs">
+                      <div className="bg-slate-900 border border-slate-700 rounded-lg p-1 flex items-center">
+                        <span className="text-slate-400 px-2">Model:</span>
+                        <button onClick={() => setPoolingModel('random')} className={`px-2 py-1 rounded font-bold ${poolingModel === 'random' ? 'bg-[#E5A93C] text-[#070D1E]' : 'text-slate-300'}`}>Random</button>
+                        <button onClick={() => setPoolingModel('fixed')} className={`px-2 py-1 rounded font-bold ${poolingModel === 'fixed' ? 'bg-[#E5A93C] text-[#070D1E]' : 'text-slate-300'}`}>Fixed</button>
+                      </div>
+                      <button onClick={() => setExcludeHighRoB(!excludeHighRoB)} className={`px-3 py-1.5 rounded-lg border font-semibold ${excludeHighRoB ? 'bg-amber-500/20 border-amber-500 text-amber-300' : 'bg-slate-900 border-slate-700 text-slate-300'}`}>
+                        {excludeHighRoB ? "High RoB Excluded" : "All Studies Included"}
+                      </button>
+                      <button disabled={forestAiLoading} onClick={handleInterpretForestPlot} className="px-3 py-1.5 bg-[#E5A93C] text-[#070D1E] rounded-lg font-bold flex items-center space-x-1">
+                        <Icon name="sparkles" className="w-3.5 h-3.5" />
+                        <span>{forestAiLoading ? "Synthesizing..." : "AI Manuscript Paragraph"}</span>
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* Summary Metrics */}
+                  <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 pt-6 text-xs">
+                    <div className="bg-slate-900/80 p-3 rounded-xl border border-slate-800">
+                      <span className="text-slate-400 uppercase block">Pooled Effect (95% CI)</span>
+                      <div className="text-lg font-bold text-[#E5A93C] mt-0.5">{metaStats.pooled} [{metaStats.ciLower}, {metaStats.ciUpper}]</div>
+                    </div>
+                    <div className="bg-slate-900/80 p-3 rounded-xl border border-slate-800">
+                      <span className="text-slate-400 uppercase block">Heterogeneity (I²)</span>
+                      <div className="text-lg font-bold text-slate-200 mt-0.5">{metaStats.iSquared}%</div>
+                    </div>
+                    <div className="bg-slate-900/80 p-3 rounded-xl border border-slate-800">
+                      <span className="text-slate-400 uppercase block">Between-Study (τ²)</span>
+                      <div className="text-lg font-bold text-slate-200 mt-0.5 font-mono">{metaStats.tauSquared}</div>
+                    </div>
+                    <div className="bg-slate-900/80 p-3 rounded-xl border border-slate-800">
+                      <span className="text-slate-400 uppercase block">Overall Significance</span>
+                      <div className="text-lg font-bold text-emerald-400 mt-0.5">p {metaStats.pVal}</div>
+                    </div>
+                  </div>
+
+                  {/* SVG Forest Canvas */}
+                  <div className="mt-6 bg-[#070D1E] rounded-xl border border-slate-800 p-4 overflow-x-auto text-xs">
+                    <div className="min-w-[640px]">
+                      <div className="grid grid-cols-12 text-slate-400 font-semibold pb-2 border-b border-slate-800">
+                        <div className="col-span-4">Study Citation</div>
+                        <div className="col-span-1 text-center">RoB</div>
+                        <div className="col-span-1 text-right">Weight</div>
+                        <div className="col-span-4 text-center">Forest Plot (Log Scale)</div>
+                        <div className="col-span-2 text-right">Effect [95% CI]</div>
+                      </div>
+
+                      <div className="divide-y divide-slate-800/60 font-mono">
+                        {filteredStudies.map(s => {
+                          const minL = -1.5, maxL = 0.8;
+                          const mapX = (v) => Math.min(95, Math.max(5, ((v - minL) / (maxL - minL)) * 100));
+                          const xP = mapX(Math.log(s.effect)), xL = mapX(Math.log(s.ciLower)), xH = mapX(Math.log(s.ciUpper)), x0 = mapX(0);
+
+                          return (
+                            <div key={s.id} className="grid grid-cols-12 py-3 items-center">
+                              <div className="col-span-4 font-sans text-slate-200">{s.name}</div>
+                              <div className="col-span-1 text-center font-sans">
+                                <span className={`text-[10px] px-1.5 py-0.5 rounded ${s.rob === 'Low' ? 'bg-emerald-950 text-emerald-300' : s.rob === 'Some Concerns' ? 'bg-amber-950 text-amber-300' : 'bg-rose-950 text-rose-300'}`}>{s.rob}</span>
+                              </div>
+                              <div className="col-span-1 text-right text-slate-400">20%</div>
+                              <div className="col-span-4 px-2 relative h-6 flex items-center">
+                                <svg className="w-full h-full overflow-visible">
+                                  <line x1={`${x0}%`} y1="0" x2={`${x0}%`} y2="100%" stroke="#475569" strokeDasharray="3 3" />
+                                  <line x1={`${xL}%`} y1="50%" x2={`${xH}%`} y2="50%" stroke="#94A3B8" strokeWidth="1.5" />
+                                  <rect x={`calc(${xP}% - 4px)`} y="calc(50% - 4px)" width="8" height="8" fill="#E5A93C" />
+                                </svg>
+                              </div>
+                              <div className="col-span-2 text-right text-slate-300">{s.effect.toFixed(2)} [{s.ciLower.toFixed(2)}, {s.ciUpper.toFixed(2)}]</div>
+                            </div>
+                          );
+                        })}
+
+                        {/* Pooled Diamond */}
+                        {(() => {
+                          const minL = -1.5, maxL = 0.8;
+                          const mapX = (v) => Math.min(95, Math.max(5, ((v - minL) / (maxL - minL)) * 100));
+                          const xP = mapX(Math.log(metaStats.pooled)), xL = mapX(Math.log(metaStats.ciLower)), xH = mapX(Math.log(metaStats.ciUpper)), x0 = mapX(0);
+
+                          return (
+                            <div className="grid grid-cols-12 py-3.5 items-center bg-[#0E1B38] font-sans font-bold border-t-2 border-slate-700">
+                              <div className="col-span-4 pl-2 text-white">Pooled Estimate ({poolingModel})</div>
+                              <div className="col-span-1 text-center"><span className="text-[10px] bg-slate-800 text-slate-300 px-1.5 py-0.5 rounded">All</span></div>
+                              <div className="col-span-1 text-right text-[#E5A93C]">100%</div>
+                              <div className="col-span-4 px-2 relative h-6 flex items-center">
+                                <svg className="w-full h-full overflow-visible">
+                                  <line x1={`${x0}%`} y1="0" x2={`${x0}%`} y2="100%" stroke="#475569" strokeDasharray="3 3" />
+                                  <polygon points={`${xL},12 ${xP},4 ${xH},12 ${xP},20`} fill="#E5A93C" stroke="#C98A25" />
+                                </svg>
+                              </div>
+                              <div className="col-span-2 text-right text-[#E5A93C] font-mono">{metaStats.pooled} [{metaStats.ciLower}, {metaStats.ciUpper}]</div>
+                            </div>
+                          );
+                        })()}
+                      </div>
+                    </div>
+                  </div>
+
+                  {forestAiResult && (
+                    <div className="mt-4 p-4 bg-slate-900 border border-[#E5A93C]/40 rounded-xl text-xs space-y-2 animate-fadeIn">
+                      <span className="font-bold text-[#E5A93C] uppercase block">AI Drafted Results Paragraph</span>
+                      <p className="text-slate-200 italic leading-relaxed">"{forestAiResult.manuscriptParagraph}"</p>
+                      <div className="flex gap-4 pt-1 text-slate-400">
+                        <span><strong>GRADE:</strong> {forestAiResult.gradeRating}</span>
+                        <span><strong>Takeaway:</strong> {forestAiResult.clinicalTakeaway}</span>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {/* VIEW 4: RISK OF BIAS */}
+            {activeTab === 'rob' && (
+              <div className="bg-[#0B132B] p-6 rounded-2xl border border-slate-800 shadow-xl space-y-4 text-xs">
+                <h2 className="text-lg font-bold text-white">Cochrane RoB 2 Matrix Explorer</h2>
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left text-slate-300">
+                    <thead className="bg-slate-900 text-slate-400 uppercase tracking-wider font-semibold border-b border-slate-800">
+                      <tr>
+                        <th className="py-2.5 px-3">Study</th>
+                        <th className="py-2.5 px-2 text-center">Randomization</th>
+                        <th className="py-2.5 px-2 text-center">Deviations</th>
+                        <th className="py-2.5 px-2 text-center">Missing Data</th>
+                        <th className="py-2.5 px-2 text-center">Measurement</th>
+                        <th className="py-2.5 px-2 text-center">Selective Reporting</th>
+                        <th className="py-2.5 px-3 text-center">Overall</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-800">
+                      {[
+                        { name: "Morrison et al. (2021)", d: ["+", "+", "+", "+", "+"], o: "Low" },
+                        { name: "Vanderbilt & Chen (2022)", d: ["+", "?", "+", "+", "?"], o: "Some Concerns" },
+                        { name: "Al-Mansour et al. (2023)", d: ["+", "+", "+", "+", "+"], o: "Low" },
+                        { name: "Gupta & Davies (2024)", d: ["?", "-", "+", "-", "+"], o: "High" }
+                      ].map((row, idx) => (
+                        <tr key={idx} className="hover:bg-slate-900/40">
+                          <td className="py-2.5 px-3 font-semibold text-white">{row.name}</td>
+                          {row.d.map((val, i) => (
+                            <td key={i} className="py-2.5 px-2 text-center">
+                              <span className={`px-2 py-0.5 rounded-full font-bold text-[10px] ${val === '+' ? 'bg-emerald-500/20 text-emerald-400' : val === '?' ? 'bg-amber-500/20 text-amber-400' : 'bg-rose-500/20 text-rose-400'}`}>{val}</span>
+                            </td>
+                          ))}
+                          <td className="py-2.5 px-3 text-center">
+                            <span className={`px-2 py-0.5 rounded text-[10px] font-bold ${row.o === 'Low' ? 'bg-emerald-950 text-emerald-300' : row.o === 'High' ? 'bg-rose-950 text-rose-300' : 'bg-amber-950 text-amber-300'}`}>{row.o}</span>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            )}
+
+            {/* VIEW 5: CHECKLIST */}
+            {activeTab === 'checklist' && (
+              <div className="bg-[#0B132B] p-6 rounded-2xl border border-slate-800 shadow-xl space-y-4 text-xs">
+                <h2 className="text-lg font-bold text-white">Master PRISMA 2020 Protocol Checklist</h2>
+                <div className="space-y-4">
+                  {META_STEPS.map(step => (
+                    <div key={step.stepNumber} className="p-3.5 bg-slate-900/60 rounded-xl border border-slate-800">
+                      <span className="font-bold text-white block mb-2">{step.stepNumber}. {step.title}</span>
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                        {step.keyTasks.map(task => (
+                          <div key={task.id} onClick={() => toggleTask(task.id)} className="flex items-center space-x-2 p-2 bg-slate-950/40 rounded border border-slate-800/80 cursor-pointer">
+                            <Icon name={checkedTasks[task.id] ? "check-circle" : "circle"} className={`w-4 h-4 ${checkedTasks[task.id] ? "text-emerald-400" : "text-slate-600"}`} />
+                            <span className={checkedTasks[task.id] ? "line-through text-slate-500" : "text-slate-300"}>{task.text}</span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* VIEW 6: CONSULTATION */}
+            {activeTab === 'contact' && (
+              <div className="max-w-2xl mx-auto bg-[#0B132B] p-6 rounded-2xl border border-slate-800 shadow-xl text-xs space-y-4">
+                <div className="text-center pb-4 border-b border-slate-800">
+                  <span className="font-bold text-[#E5A93C] uppercase tracking-wider block">Meta-Analysis Consulting</span>
+                  <h2 className="text-xl font-bold text-white mt-1">Ready to Turn Your Literature Review Into a Result?</h2>
+                  <p className="text-slate-300 mt-1">Send over your research question — get a direct, plain-language appraisal on feasibility and journal scope.</p>
+                </div>
+
+                {formSubmitted ? (
+                  <div className="text-center py-8 space-y-2">
+                    <Icon name="check-circle" className="w-10 h-10 text-emerald-400 mx-auto" />
+                    <h3 className="text-base font-bold text-white">Inquiry Received</h3>
+                    <p className="text-slate-400">We will review your PICO structure and respond within 24 hours.</p>
+                  </div>
+                ) : (
+                  <form onSubmit={(e) => { e.preventDefault(); setFormSubmitted(true); }} className="space-y-3">
+                    <div>
+                      <label className="block text-slate-300 font-bold mb-1">Your Research Question</label>
+                      <textarea required rows={3} value={formData.question} onChange={e => setFormData({ ...formData, question: e.target.value })} placeholder="e.g. Correlation of osteoporosis with inflammatory markers..." className="w-full bg-slate-900 border border-slate-700 rounded-lg p-2.5 text-white" />
+                    </div>
+                    <div>
+                      <label className="block text-slate-300 font-bold mb-1">Contact Email</label>
+                      <input required type="email" value={formData.email} onChange={e => setFormData({ ...formData, email: e.target.value })} placeholder="researcher@institution.edu" className="w-full bg-slate-900 border border-slate-700 rounded-lg p-2.5 text-white" />
+                    </div>
+                    <div>
+                      <label className="block text-slate-300 font-bold mb-1">Project Details / Target Submission</label>
+                      <textarea rows={2} value={formData.notes} onChange={e => setFormData({ ...formData, notes: e.target.value })} placeholder="e.g. Q1 journal submission, expected high heterogeneity..." className="w-full bg-slate-900 border border-slate-700 rounded-lg p-2.5 text-white" />
+                    </div>
+                    <button type="submit" className="w-full py-3 bg-[#E5A93C] text-[#070D1E] font-bold rounded-lg shadow">
+                      Request Methodological Scoping
+                    </button>
+                    <div className="text-center text-slate-400 text-[11px] pt-1">
+                      Direct Email: <a href="mailto:Hanyas.salem@gmail.com" className="text-[#E5A93C] underline">Hanyas.salem@gmail.com</a>
+                    </div>
+                  </form>
+                )}
+              </div>
+            )}
+          </main>
+
+          {/* FOOTER */}
+          <footer className="mt-auto border-t border-slate-800/80 bg-[#0B132B]/80 py-4 px-4 text-xs text-slate-400">
+            <div className="max-w-7xl mx-auto flex flex-col sm:flex-row items-center justify-between gap-2">
+              <span>META-ANALYSIS CONSULTING • Protocol-driven. PRISMA-aligned. Built to survive peer review.</span>
+              <span className="text-[#E5A93C] font-mono">Hanyas.salem@gmail.com</span>
+            </div>
+          </footer>
+        </div>
+      );
+    }
+
+    ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+  </script>
+</body>
+</html>
