@@ -1,5 +1,9 @@
 # Meta-Analysis Consultation
 
+
+<img width="1449" height="841" alt="image" src="https://github.com/user-attachments/assets/34dbffa4-9492-4e9b-9951-03f6b4e3a623" />
+
+
 An interactive, browser-based toolkit for planning, evaluating, and presenting systematic reviews and meta-analyses using an eight-step PRISMA-informed workflow.
 
 ## Live Demo
@@ -27,6 +31,9 @@ Once GitHub Pages is enabled, the application will be available at:
 - Responsive interface for desktop and mobile browsers
 
 ## Running the Application
+
+<img width="1447" height="861" alt="image" src="https://github.com/user-attachments/assets/5aecb95f-db27-4fec-8096-24b255d76d18" />
+
 
 This is a single static HTML application. No build process or package installation is required.
 
